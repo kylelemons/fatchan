@@ -121,8 +121,8 @@ func TestEncode(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		buf := new(buffer)
-		xport := New(nil, nil)
+		buf := new(bytes.Buffer)
+		xport := New(new(buffer), nil)
 		xport.encodeValue(buf, reflect.ValueOf(test.Value))
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
