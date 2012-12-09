@@ -47,7 +47,7 @@
 // count, but if you have two different versions of your binary talking to one
 // another with slightly different structure definitions, it may not catch you.
 //
-// It does NOT support deserializing interface types.
+// Fatchan does NOT support deserializing interface types.
 //
 // Disclaimer
 //
