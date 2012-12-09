@@ -50,7 +50,8 @@ func logError(sid, cid uint64, err error) {
 // When errors are found on a channel connected to the returned Transport, the
 // onError function will be called with the Stream ID, Channel ID (unique per
 // channel within a transport) and the error.  The Channel ID will be 0 if the
-// error is not associated with or cannot be traced to a channel.
+// error is not associated with or cannot be traced to a channel.  If onError
+// is nil, the errors will be written through the default logger.
 func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Transport {
 	if onError == nil {
 		onError = logError
