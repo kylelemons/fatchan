@@ -30,12 +30,18 @@ func TestEndToEnd(t *testing.T) {
 	if _, _, err := sxport.ToChan(server); err != nil {
 		t.Errorf("tochan: %s", err)
 	}
+	if got, want := sxport.CID(server), uint64(1); got != want {
+		t.Errorf("server cid = %v, want %v", got, want)
+	}
 
 	// Client side
 	client := make(chan Request)
 	cxport := New(local, ohNo)
 	if _, _, err := cxport.FromChan(client); err != nil {
 		t.Errorf("fromchan: %s", err)
+	}
+	if got, want := cxport.CID(client), uint64(1); got != want {
+		t.Errorf("client cid = %v, want %v", got, want)
 	}
 
 	go func() {

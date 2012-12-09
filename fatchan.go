@@ -40,6 +40,8 @@ type Transport struct {
 	// Channel identifiers
 	sid     uint64
 	nextCID uint64
+	cidrw   sync.RWMutex
+	cid     map[interface{}]uint64
 }
 
 func logError(sid, cid uint64, err error) {
@@ -64,6 +66,7 @@ func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Tran
 		rwc:   rwc,
 		err:   onError,
 		sid:   atomic.AddUint64(&nextSID, 1),
+		cid:   make(map[interface{}]uint64),
 	}
 	go t.manage()
 	return t
@@ -81,6 +84,21 @@ func (t *Transport) Close() error {
 // greater than zero.
 func (t *Transport) SID() uint64 {
 	return t.sid
+}
+
+// CID returns the Channel ID for the given channel within this transport.  All
+// valid CIDs are greater than zero, thus if the channel has never been a part
+// of this transport, the returned ID will be 0.
+func (t *Transport) CID(channel interface{}) uint64 {
+	t.cidrw.RLock()
+	defer t.cidrw.RUnlock()
+	return t.cid[channel]
+}
+
+func (t *Transport) setCID(channel interface{}, cid uint64) {
+	t.cidrw.Lock()
+	defer t.cidrw.Unlock()
+	t.cid[channel] = cid
 }
 
 func (t *Transport) manage() {
@@ -169,6 +187,7 @@ func (t *Transport) FromChan(channel interface{}) (sid, cid uint64, err error) {
 
 func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 	sid, cid := t.sid, atomic.AddUint64(&t.nextCID, 1)
+	t.setCID(cval.Interface(), cid)
 
 	// Type check! woo
 	if cval.Kind() != reflect.Chan {
@@ -245,6 +264,7 @@ func (t *Transport) ToChan(channel interface{}) (sid, cid uint64, err error) {
 
 func (t *Transport) toChan(cval reflect.Value) (uint64, uint64, error) {
 	sid, cid := t.sid, atomic.AddUint64(&t.nextCID, 1)
+	t.setCID(cval.Interface(), cid)
 
 	// Type check! woo
 	if cval.Kind() != reflect.Chan {
