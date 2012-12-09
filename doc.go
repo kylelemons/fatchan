@@ -25,6 +25,9 @@
 //       Update chan string `fatchan:"request"`
 //   }
 //
+// When you close a channel on one side of a fatchan, it should (hopefully)
+// cause the channel to be closed on the other side as well.
+//
 // Supported Types
 //
 // Package fatchan supports pretty much any type that can be serialized.  In particular:
@@ -38,6 +41,11 @@
 //   Composite types:
 //    - maps of supported types
 //    - structs of supported types
+//
+// Structures are serialized field-wise, not using gob.  Fatchan tries to make
+// sure that the structures are compatible by sending their name and field
+// count, but if you have two different versions of your binary talking to one
+// another with slightly different structure definitions, it may not catch you.
 //
 // It does NOT support deserializing interface types.
 //
