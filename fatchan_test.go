@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestEndToEnd(t *testing.T) {
 	type Request struct {
 		Input  string
-		Output chan string
+		Output chan string `fatchan:"reply"`
 	}
 	ohNo := func(sid, cid uint64, err error) {
 		t.Errorf("channel %d: %s", err)
@@ -30,14 +32,26 @@ func TestEndToEnd(t *testing.T) {
 	if _, _, err := New(remote, ohNo).ToChan(server); err != nil {
 
 	}
-
-	want := Request{}
 	go func() {
-		client <- want
+		req := <-server
+		t.Logf("Got request: %#v", req)
+		req.Output <- req.Input
 	}()
-	got := <-server
 
-	t.Logf("sent %+v, got %+v, want %+v", want, got, want)
+	want := "test"
+	reply := make(chan string)
+	client <- Request{
+		Input:  want,
+		Output: reply,
+	}
+	select {
+	case got := <-reply:
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Errorf("timeout")
+	}
 }
 
 type buffer struct {
@@ -104,6 +118,11 @@ func TestEncode(t *testing.T) {
 			Encoding: "\x02ab",
 		},
 		{
+			Desc:     "map",
+			Value:    map[string]bool{"ford": true},
+			Encoding: "\x01\x04fordT",
+		},
+		{
 			Desc:     "struct",
 			Value:    example{"zaphod", true},
 			Encoding: "\x07example\x02\x06zaphodT",
@@ -126,6 +145,97 @@ func TestEncode(t *testing.T) {
 		xport.encodeValue(buf, reflect.ValueOf(test.Value))
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
+		}
+	}
+}
+
+func TestDecode(t *testing.T) {
+	type person struct {
+		First, Last string
+		Hoopy       bool
+	}
+	type request struct {
+		Reply chan string `fatchan:"reply"`
+	}
+
+	tests := []struct {
+		Desc   string
+		Input  string
+		Expect interface{}
+	}{
+		{
+			Desc:   "int",
+			Input:  "\xa4\x42",
+			Expect: 4242,
+		},
+		{
+			Desc:   "uint",
+			Input:  "\x92\x21",
+			Expect: uint(4242),
+		},
+		{
+			Desc:   "bool",
+			Input:  "T",
+			Expect: true,
+		},
+		{
+			Desc:   "float",
+			Input:  "\x40\xba\x85\x00\x00\x00\x00\x00",
+			Expect: 6789.0,
+		},
+		{
+			Desc:   "complex",
+			Input:  "\x40\xba\x85\x00\x00\x00\x00\x00\xc0\x7b\x00\x00\x00\x00\x00\x00",
+			Expect: (6789 - 432i),
+		},
+		{
+			Desc:   "[]bool",
+			Input:  "\x03TFT",
+			Expect: []bool{true, false, true},
+		},
+		{
+			Desc:   "[]byte",
+			Input:  "\x02ab",
+			Expect: []byte{'a', 'b'},
+		},
+		{
+			Desc:   "string",
+			Input:  "\x02ab",
+			Expect: "ab",
+		},
+		{
+			Desc:   "map",
+			Input:  "\x02\x04fordT\x06zaphodF",
+			Expect: map[string]bool{"ford": true, "zaphod": false},
+		},
+		{
+			Desc:   "struct",
+			Input:  "\x06person\x03\x04Ford\x07PrefectT",
+			Expect: person{"Ford", "Prefect", true},
+		},
+		{
+			Desc:   "struct with chan",
+			Input:  "\x07request\x01\x06string\x05reply\x01",
+			Expect: request{},
+		},
+	}
+
+	for _, test := range tests {
+		zero := reflect.New(reflect.TypeOf(test.Expect)).Elem()
+		xport := New(new(buffer), nil)
+		if err := xport.decodeValue(strings.NewReader(test.Input), zero); err != nil {
+			t.Errorf("%s: decode(%q): %s", test.Desc, test.Input, err)
+		}
+		got := zero.Interface()
+		switch got := got.(type) {
+		case request:
+			if got.Reply == nil {
+				t.Errorf("%s: decode(%q).Reply == nil, want chan value", test.Desc, test.Input)
+			}
+			continue
+		}
+		if want := test.Expect; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: decode(%q) = %#v, want %#v", test.Desc, test.Input, got, want)
 		}
 	}
 }
