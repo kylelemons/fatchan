@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-func ExampleRequest() {
+func ExampleTransport() {
 	var wg sync.WaitGroup
 
 	// Set up the fake network
