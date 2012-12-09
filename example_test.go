@@ -85,3 +85,47 @@ func ExampleTransport() {
 	// Found 's' 1 times
 	// Found 't' 3 times
 }
+
+func ExampleTransport_FromChan(conn net.Conn) {
+	type Request struct {
+		Input  string
+		Output chan string
+	}
+
+	// Create the transport
+	xport := New(conn, nil)
+
+	// Register the channel
+	out := make(chan Request)
+	in := make(chan string)
+	xport.FromChan(out)
+
+	// Send the request
+	out <- Request{
+		Input:  "testing",
+		Output: in,
+	}
+
+	// Get the response
+	fmt.Println(<-in)
+}
+
+func ExampleTransport_ToChan(conn net.Conn) {
+	type Request struct {
+		Input  string
+		Output chan string
+	}
+
+	// Create the transport
+	xport := New(conn, nil)
+
+	// Register the channel
+	in := make(chan Request)
+	xport.ToChan(in)
+
+	// Recieve a request
+	req := <-in
+
+	// Send the response
+	req.Output <- req.Input
+}

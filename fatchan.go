@@ -45,6 +45,12 @@ func logError(sid, cid uint64, err error) {
 	log.Printf("fatchan[sid=%d,cid=%d] error: %s", sid, cid, err)
 }
 
+// New creates a Transport with the given ReadWriteCloser (usually a net.Conn).
+//
+// When errors are found on a channel connected to the returned Transport, the
+// onError function will be called with the Stream ID, Channel ID (unique per
+// channel within a transport) and the error.  The Channel ID will be 0 if the
+// error is not associated with or cannot be traced to a channel.
 func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Transport {
 	if onError == nil {
 		onError = logError
@@ -60,12 +66,23 @@ func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Tran
 	return t
 }
 
+// SID returns the Stream ID for this transport.  All valid stream IDs are
+// greater than zero.
+func (t *Transport) SID() uint64 {
+	return t.sid
+}
+
 func (t *Transport) manage() {
 	defer close(t.reg)
 	chans := map[uint64]chan []byte{}
+	defer func() {
+		for _, ch := range chans {
+			close(ch)
+		}
+	}()
 
 	type chunk struct {
-		sid  uint64
+		cid  uint64
 		data []byte
 	}
 	chunks := make(chan chunk, 32)
@@ -87,6 +104,12 @@ func (t *Transport) manage() {
 				return
 			}
 
+			// Handle close message explicitly
+			if size == 0 {
+				chunks <- chunk{cid, nil}
+				continue
+			}
+
 			// Read data
 			data := make([]byte, size)
 			if _, err := io.ReadFull(br, data); err != nil {
@@ -105,15 +128,19 @@ func (t *Transport) manage() {
 			if !ok {
 				return
 			}
-			ch, ok := chans[c.sid]
+			ch, ok := chans[c.cid]
 			if !ok {
-				t.err(t.sid, c.sid, fmt.Errorf("unknown sid %d with data %q", c.sid, c.data))
+				t.err(t.sid, c.cid, fmt.Errorf("unknown cid %d with data %q", c.cid, c.data))
+				continue
+			}
+			if c.data == nil {
+				delete(chans, c.cid)
+				close(ch)
 				continue
 			}
 			ch <- c.data
 		case reg := <-t.reg:
 			chans[reg.cid] = reg.data
-			defer close(reg.data)
 		case unreg := <-t.unreg:
 			delete(chans, unreg.cid)
 		}
@@ -121,6 +148,9 @@ func (t *Transport) manage() {
 }
 
 // FromChan will send objects over the wire from the given channel.
+//
+// This is the "client" side registration mechanism.  It sends data over the transport
+// that is "read from" the given channel.
 func (t *Transport) FromChan(channel interface{}) (sid, cid uint64, err error) {
 	return t.fromChan(reflect.ValueOf(channel))
 }
@@ -167,6 +197,7 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 			// Wait for an object from the channel
 			v, ok := cval.Recv()
 			if !ok {
+				send(buf)
 				return
 			}
 

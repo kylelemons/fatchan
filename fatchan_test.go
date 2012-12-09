@@ -36,6 +36,7 @@ func TestEndToEnd(t *testing.T) {
 		req := <-server
 		t.Logf("Got request: %#v", req)
 		req.Output <- req.Input
+		close(req.Output)
 	}()
 
 	want := "test"
@@ -50,7 +51,16 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Errorf("timeout")
+		t.Errorf("timeout in receive")
+		return
+	}
+	select {
+	case _, ok := <-reply:
+		if ok {
+			t.Errorf("received actual value??")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Errorf("channel did not get closed!")
 	}
 }
 
