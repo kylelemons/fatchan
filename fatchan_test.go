@@ -295,3 +295,35 @@ func TestServerDisconnect(t *testing.T) {
 		panic("for stack trace")
 	}
 }
+
+func TestProxy(t *testing.T) {
+	apipe, b1pipe := net.Pipe()
+	b2pipe, cpipe := net.Pipe()
+
+	// A
+	achan := make(chan chan string)
+	axport := New(apipe, nil)
+	axport.FromChan(achan)
+
+	// B
+	bchan := make(chan chan string)
+	b1xport := New(b1pipe, nil)
+	b2xport := New(b2pipe, nil)
+	b1xport.ToChan(bchan)
+	b2xport.FromChan(bchan)
+
+	// C
+	cchan := make(chan chan string)
+	cxport := New(cpipe, nil)
+	cxport.ToChan(cchan)
+
+	victim := make(chan string)
+	achan <- victim
+	proxied := <-cchan
+
+	want := "test"
+	proxied <- want
+	if got := <-victim; got != want {
+		t.Errorf("got %q through proxy, want %q", got, want)
+	}
+}

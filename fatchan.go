@@ -380,6 +380,10 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 				return err
 			}
 		}
+	case reflect.Chan:
+		if err := t.encodeChan(w, val, ""); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unrecognized type %s in value %s", val.Type(), val)
 	}
@@ -509,6 +513,10 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 			if err := t.decodeValue(r, val.Field(i)); err != nil {
 				return err
 			}
+		}
+	case reflect.Chan:
+		if err := t.decodeChan(r, val, ""); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unrecognized type %s in value %s", val.Type(), val)
