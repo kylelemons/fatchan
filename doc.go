@@ -1,4 +1,4 @@
-// Package fatchan is a reinvisioning of netchan.
+// Package fatchan is a reimagining of netchan.
 //
 // This package is designed to be very simple to use.  You create a Transport,
 // which is usually backed by a network socket, and then you can connect
