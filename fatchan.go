@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // For consistency:
@@ -284,7 +285,12 @@ func (t *Transport) toChan(cval reflect.Value) (uint64, uint64, error) {
 	go func() {
 		defer cval.Close()
 		defer func() {
-			t.unreg <- unregister{cid}
+			select {
+			case t.unreg <- unregister{cid}:
+			case <-time.After(10 * time.Millisecond):
+				// TODO(kevlar): Is this prefereable to closing the channel
+				// and catching the panic?  I'm not sure.
+			}
 		}()
 
 		for data := range recv {

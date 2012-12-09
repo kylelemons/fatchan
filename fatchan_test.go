@@ -270,3 +270,28 @@ func TestDecode(t *testing.T) {
 		xport.Close()
 	}
 }
+
+func TestServerDisconnect(t *testing.T) {
+	spipe, cpipe := net.Pipe()
+
+	// Client side
+	cxport := New(cpipe, nil)
+	client := make(chan string)
+	cxport.ToChan(client)
+	defer cxport.Close()
+
+	// Disconnect the server
+	spipe.Close()
+
+	// Did the client channel get closed?
+	select {
+	case _, ok := <-client:
+		if ok {
+			t.Errorf("Real value received?!")
+			return
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Errorf("timeout waiting for client channel close")
+		panic("for stack trace")
+	}
+}
