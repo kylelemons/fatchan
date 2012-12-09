@@ -62,7 +62,6 @@ func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Tran
 
 func (t *Transport) manage() {
 	defer close(t.reg)
-	defer close(t.unreg)
 	chans := map[uint64]chan []byte{}
 
 	type chunk struct {
@@ -106,7 +105,6 @@ func (t *Transport) manage() {
 			if !ok {
 				return
 			}
-			fmt.Printf("Read chunk: %d %q\n", c.sid, c.data)
 			ch, ok := chans[c.sid]
 			if !ok {
 				t.err(t.sid, c.sid, fmt.Errorf("unknown sid %d with data %q", c.sid, c.data))
@@ -137,9 +135,6 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 	if cval.Type().ChanDir()&reflect.RecvDir == 0 {
 		return sid, cid, fmt.Errorf("fatchan: cannot connect a %s - send-only channel", cval.Type())
 	}
-
-	// Peruse the element type
-	etyp := cval.Type().Elem()
 
 	var raw [8]byte
 	send := func(buf *bytes.Buffer) error {
@@ -174,7 +169,6 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 			if !ok {
 				return
 			}
-			fmt.Printf("Encoding %s: %#v, %v\n", etyp, v, ok)
 
 			// Encode the object
 			if err := t.encodeValue(buf, v); err != nil {
