@@ -301,7 +301,13 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 		w.Write(raw[:])
 		endian.PutUint64(raw[:], ibits)
 		w.Write(raw[:])
-	case reflect.Array, reflect.Slice, reflect.String:
+	// TODO(kevlar): at tip, string can go with reflect.Array
+	case reflect.String:
+		var raw [8]byte
+		varint := raw[:binary.PutUvarint(raw[:], uint64(val.Len()))]
+		w.Write(varint)
+		io.WriteString(w, val.String())
+	case reflect.Array, reflect.Slice:
 		var raw [8]byte
 		varint := raw[:binary.PutUvarint(raw[:], uint64(val.Len()))]
 		w.Write(varint)
