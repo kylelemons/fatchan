@@ -2,6 +2,7 @@ package fatchan
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"reflect"
 	"strings"
@@ -15,28 +16,33 @@ func TestEndToEnd(t *testing.T) {
 		Output chan string `fatchan:"reply"`
 	}
 	ohNo := func(sid, cid uint64, err error) {
-		t.Errorf("channel %d: %s", err)
+		if err != io.EOF {
+			t.Logf("channel %d,%d: %s", sid, cid, err)
+		}
 	}
 
 	// Transport
 	local, remote := net.Pipe()
 
-	// Client side
-	client := make(chan Request)
-	if _, _, err := New(local, ohNo).FromChan(client); err != nil {
-
-	}
-
 	// Server side
 	server := make(chan Request)
-	if _, _, err := New(remote, ohNo).ToChan(server); err != nil {
-
+	sxport := New(remote, ohNo)
+	if _, _, err := sxport.ToChan(server); err != nil {
+		t.Errorf("tochan: %s", err)
 	}
+
+	// Client side
+	client := make(chan Request)
+	cxport := New(local, ohNo)
+	if _, _, err := cxport.FromChan(client); err != nil {
+		t.Errorf("fromchan: %s", err)
+	}
+
 	go func() {
 		req := <-server
+		defer close(req.Output)
 		t.Logf("Got request: %#v", req)
 		req.Output <- req.Input
-		close(req.Output)
 	}()
 
 	want := "test"
@@ -45,6 +51,7 @@ func TestEndToEnd(t *testing.T) {
 		Input:  want,
 		Output: reply,
 	}
+
 	select {
 	case got := <-reply:
 		if got != want {
@@ -54,6 +61,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("timeout in receive")
 		return
 	}
+
 	select {
 	case _, ok := <-reply:
 		if ok {
@@ -62,6 +70,11 @@ func TestEndToEnd(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Errorf("channel did not get closed!")
 	}
+
+	// Cleanup
+	close(client)
+	cxport.Close()
+	sxport.Close()
 }
 
 type buffer struct {
@@ -156,6 +169,7 @@ func TestEncode(t *testing.T) {
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
 		}
+		xport.Close()
 	}
 }
 
@@ -247,5 +261,6 @@ func TestDecode(t *testing.T) {
 		if want := test.Expect; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: decode(%q) = %#v, want %#v", test.Desc, test.Input, got, want)
 		}
+		xport.Close()
 	}
 }

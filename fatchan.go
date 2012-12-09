@@ -31,6 +31,7 @@ type Transport struct {
 	write sync.Mutex
 	reg   chan register
 	unreg chan unregister
+	done  chan bool
 	rwc   io.ReadWriteCloser
 
 	// Error callback
@@ -59,12 +60,21 @@ func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Tran
 	t := &Transport{
 		reg:   make(chan register),
 		unreg: make(chan unregister),
+		done:  make(chan bool),
 		rwc:   rwc,
 		err:   onError,
 		sid:   atomic.AddUint64(&nextSID, 1),
 	}
 	go t.manage()
 	return t
+}
+
+// Close closes the underlying transport and waits for the manage loop to
+// complete before returning.
+func (t *Transport) Close() error {
+	err := t.rwc.Close()
+	<-t.done
+	return err
 }
 
 // SID returns the Stream ID for this transport.  All valid stream IDs are
@@ -75,6 +85,7 @@ func (t *Transport) SID() uint64 {
 
 func (t *Transport) manage() {
 	defer close(t.reg)
+	defer close(t.done)
 	chans := map[uint64]chan []byte{}
 	defer func() {
 		for _, ch := range chans {
