@@ -97,10 +97,10 @@ func ExampleTransport_FromChan(conn net.Conn) {
 
 	// Register the channel
 	out := make(chan Request)
-	in := make(chan string)
 	xport.FromChan(out)
 
 	// Send the request
+	in := make(chan string)
 	out <- Request{
 		Input:  "testing",
 		Output: in,
