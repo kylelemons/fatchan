@@ -20,11 +20,12 @@ The following integral numeric types are supported:
     int int8 int16 int32 int64
     uint uint8 uint16 uint32 uint64
 
-All of these are encoded using the
+With the exception of uint8 (aka byte), all of these are encoded using the
 [varint](https://developers.google.com/protocol-buffers/docs/encoding#varints)
 encoding or
 [zigzag](https://developers.google.com/protocol-buffers/docs/encoding#types)
-encoding according to the signedness of the value.
+encoding according to the signedness of the value.  Bytes (aka uint8) are
+encoded as single bytes.
 
 The following floating point types are supported:
 

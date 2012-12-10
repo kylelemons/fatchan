@@ -322,13 +322,16 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 		var raw [8]byte
 		varint := raw[:binary.PutVarint(raw[:], val.Int())]
 		w.Write(varint)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		var raw [8]byte
 		varint := raw[:binary.PutUvarint(raw[:], val.Uint())]
 		w.Write(varint)
 	case reflect.Uintptr:
 		var raw [8]byte
 		endian.PutUint64(raw[:], val.Uint())
+		w.Write(raw[:])
+	case reflect.Uint8:
+		raw := []byte{byte(val.Uint())}
 		w.Write(raw[:])
 	case reflect.Bool:
 		ch := "F"
@@ -459,7 +462,7 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 			return err
 		}
 		val.SetInt(varint)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		varint, err := binary.ReadUvarint(r)
 		if err != nil {
 			return err
@@ -471,6 +474,12 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 			return err
 		}
 		val.SetUint(endian.Uint64(raw[:]))
+	case reflect.Uint8:
+		b, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		val.SetUint(uint64(b))
 	case reflect.Bool:
 		c, err := r.ReadByte()
 		if err != nil {

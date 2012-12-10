@@ -181,6 +181,11 @@ func TestEncode(t *testing.T) {
 			Value:    proxy{make(chan string)},
 			Encoding: "\x05proxy\x01\x06string\x07request\x01",
 		},
+		{
+			Desc:     "byte > 127",
+			Value:    byte(255),
+			Encoding: "\xFF",
+		},
 	}
 
 	for _, test := range tests {
@@ -278,6 +283,11 @@ func TestDecode(t *testing.T) {
 			Desc:   "struct with chan",
 			Input:  "\x07request\x01\x06string\x05reply\x01",
 			Expect: request{},
+		},
+		{
+			Desc:   "byte > 127",
+			Input:  "\xFF",
+			Expect: byte(255),
 		},
 	}
 
