@@ -309,16 +309,27 @@ func (t *Transport) toChan(cval reflect.Value) (uint64, uint64, error) {
 func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 	// Delegate out basic types
 	switch val.Kind() {
-	case reflect.Interface, reflect.Ptr:
+	case reflect.Interface:
+		return fmt.Errorf("cannot encode interface (decoder doesn't support them)")
+	case reflect.Ptr:
+		if val.IsNil() {
+			io.WriteString(w, "0")
+		} else {
+			io.WriteString(w, "&")
+		}
 		return t.encodeValue(w, val.Elem())
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		var raw [8]byte
 		varint := raw[:binary.PutVarint(raw[:], val.Int())]
 		w.Write(varint)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		var raw [8]byte
 		varint := raw[:binary.PutUvarint(raw[:], val.Uint())]
 		w.Write(varint)
+	case reflect.Uintptr:
+		var raw [8]byte
+		endian.PutUint64(raw[:], val.Uint())
+		w.Write(raw[:])
 	case reflect.Bool:
 		ch := "F"
 		if val.Bool() {
@@ -384,6 +395,8 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 		if err := t.encodeChan(w, val, ""); err != nil {
 			return err
 		}
+	case reflect.Invalid:
+		return fmt.Errorf("cannot encode invalid value")
 	default:
 		return fmt.Errorf("unrecognized type %s in value %s", val.Type(), val)
 	}
@@ -418,6 +431,9 @@ type reader interface {
 }
 
 func (t *Transport) decodeValue(r reader, val reflect.Value) error {
+	// TODO(kevlar): Break out "decodeUvarint" and "decodeString" so that we
+	// don't need the decodeValue(r, reflect.ValueOf(...).Elem()) construct.
+
 	// Delegate out basic types
 	switch val.Kind() {
 	case reflect.Interface:
@@ -425,9 +441,16 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 			return fmt.Errorf("cannot decode into nil interface")
 		}
 	case reflect.Ptr:
+		ptype, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		if ptype == '0' {
+			return nil
+		}
 		if val.IsNil() {
-			zero := reflect.New(val.Type())
-			val.Set(zero)
+			pzero := reflect.New(val.Type().Elem())
+			val.Set(pzero)
 		}
 		return t.decodeValue(r, val.Elem())
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -436,12 +459,18 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 			return err
 		}
 		val.SetInt(varint)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		varint, err := binary.ReadUvarint(r)
 		if err != nil {
 			return err
 		}
 		val.SetUint(varint)
+	case reflect.Uintptr:
+		var raw [8]byte
+		if _, err := io.ReadFull(r, raw[:]); err != nil {
+			return err
+		}
+		val.SetUint(endian.Uint64(raw[:]))
 	case reflect.Bool:
 		c, err := r.ReadByte()
 		if err != nil {
@@ -469,7 +498,7 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 		return t.decodeArrayish(r, val)
 	case reflect.Map:
 		var count uint
-		if err := t.decodeValue(r, reflect.ValueOf(&count)); err != nil {
+		if err := t.decodeValue(r, reflect.ValueOf(&count).Elem()); err != nil {
 			return err
 		}
 		mtyp := val.Type()
@@ -491,10 +520,10 @@ func (t *Transport) decodeValue(r reader, val reflect.Value) error {
 		styp := val.Type()
 		var name string
 		var fields uint
-		if err := t.decodeValue(r, reflect.ValueOf(&name)); err != nil {
+		if err := t.decodeValue(r, reflect.ValueOf(&name).Elem()); err != nil {
 			return err
 		}
-		if err := t.decodeValue(r, reflect.ValueOf(&fields)); err != nil {
+		if err := t.decodeValue(r, reflect.ValueOf(&fields).Elem()); err != nil {
 			return err
 		}
 		if got, want := name, styp.Name(); got != want {
@@ -565,13 +594,13 @@ func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
 	var rtag string
 	var rcid uint64
 
-	if err := t.decodeValue(r, reflect.ValueOf(&name)); err != nil {
+	if err := t.decodeValue(r, reflect.ValueOf(&name).Elem()); err != nil {
 		return err
 	}
-	if err := t.decodeValue(r, reflect.ValueOf(&rtag)); err != nil {
+	if err := t.decodeValue(r, reflect.ValueOf(&rtag).Elem()); err != nil {
 		return err
 	}
-	if err := t.decodeValue(r, reflect.ValueOf(&rcid)); err != nil {
+	if err := t.decodeValue(r, reflect.ValueOf(&rcid).Elem()); err != nil {
 		return err
 	}
 
