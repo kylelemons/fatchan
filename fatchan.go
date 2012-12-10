@@ -181,7 +181,10 @@ func (t *Transport) manage() {
 // FromChan will send objects over the wire from the given channel.
 //
 // This is the "client" side registration mechanism.  It sends data over the transport
-// that is "read from" the given channel.
+// that is read "from the channel".
+//
+// FromChan should not be called after values are sent over a fatchan connected
+// to this transport.
 func (t *Transport) FromChan(channel interface{}) (sid, cid uint64, err error) {
 	return t.fromChan(reflect.ValueOf(channel))
 }
@@ -259,6 +262,12 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 }
 
 // ToChan will decode objects from the wire into the given channel.
+//
+// This is the "server" side registration mechanism.  It reads data from the
+// transport and sends it "to the channel".
+//
+// ToChan should not be called after values are sent over a fatchan connected
+// to this transport.
 func (t *Transport) ToChan(channel interface{}) (sid, cid uint64, err error) {
 	return t.toChan(reflect.ValueOf(channel))
 }
