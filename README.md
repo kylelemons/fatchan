@@ -1,12 +1,12 @@
 Introduction
-------------
+============
 
 Package fatchan is a reimagining of netchan.
 
 See [github.com/kylelemons/fatchan](http://go.pkgdoc.org/github.com/kylelemons/fatchan) for API documentation.
 
 Wire Protocol
--------------
+=============
 
 This is a (hopefully correct, hopefully complete) description of the fatchan wire protocol.
 In case I need a protocol version number for it, it will be version 0.
@@ -17,7 +17,7 @@ being sent over a channel (or an indication that the channel is closed).  Each c
 is identified by a monotonically increasing channel identifier.
 
 Frame
-=====
+-----
 
 A frame must be written atomically and contains the following:
 
@@ -30,10 +30,10 @@ In order to indicate that a channel has been closed,
 a frame with packet length 0 (and thus no packet data) is sent.
 
 Value Encodings
----------------
+===============
 
 Numeric Types
-=============
+-------------
 
 The following integral numeric types are supported:
 
@@ -61,7 +61,7 @@ The following semi-numeric types are also supported:
     uintptr - encoded as 8 bytes in big-endian order
 
 Reference Types
-===============
+---------------
 
 The only supported reference type is the pointer.  Pointers are encoded as follows:
 
@@ -72,7 +72,7 @@ Fatchans do not currently support interfaces, though I'm trying to figure out
 how I could.
 
 Container Types
-===============
+---------------
 
 Arrays and Slices are encoded as you would expect:
 
@@ -89,7 +89,7 @@ Maps are encoded similarly:
     * Value
 
 Structures
-==========
+----------
 
 Structs are encoded as follows:
 
@@ -98,7 +98,7 @@ Structs are encoded as follows:
 1. Fields (zero or more)
 
 Channels
-========
+--------
 
 Channels are encoded as follows:
 
