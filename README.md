@@ -12,6 +12,26 @@ This is a (hopefully correct, hopefully complete) description of the fatchan wir
 In case I need a protocol version number for it, it will be version 0.
 This will almost certainly be subject to change over time.
 
+The wire protocol is a sequence of value frames, each of which corresponds to a value
+being sent over a channel (or an indication that the channel is closed).  Each channel
+is identified by a monotonically increasing channel identifier.
+
+Frame
+=====
+
+A frame must be written atomically and contains the following:
+
+1. Channel ID (uvarint)
+1. Packet length (uvarint)
+1. Packet data (value encoded)
+
+All channel IDs are greater than zero.
+In order to indicate that a channel has been closed,
+a frame with packet length 0 (and thus no packet data) is sent.
+
+Value Encodings
+---------------
+
 Numeric Types
 =============
 
