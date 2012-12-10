@@ -122,6 +122,11 @@ func TestEncode(t *testing.T) {
 			Encoding: "T",
 		},
 		{
+			Desc:     "uintptr",
+			Value:    uintptr(123456789),
+			Encoding: "\x00\x00\x00\x00\x07\x5b\xcd\x15",
+		},
+		{
 			Desc:     "float",
 			Value:    6789.0,
 			Encoding: "\x40\xba\x85\x00\x00\x00\x00\x00",
@@ -145,6 +150,16 @@ func TestEncode(t *testing.T) {
 			Desc:     "string",
 			Value:    "ab",
 			Encoding: "\x02ab",
+		},
+		{
+			Desc:     "*string",
+			Value:    pstr(":)"),
+			Encoding: "&\x02:)",
+		},
+		{
+			Desc:     "*string",
+			Value:    (*string)(nil),
+			Encoding: "0",
 		},
 		{
 			Desc:     "map",
@@ -174,6 +189,7 @@ func TestEncode(t *testing.T) {
 		xport.encodeValue(buf, reflect.ValueOf(test.Value))
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
+			t.Errorf("%s: ... in hex: got %x, want %x", test.Desc, got, want)
 		}
 		xport.Close()
 	}
@@ -209,6 +225,11 @@ func TestDecode(t *testing.T) {
 			Expect: true,
 		},
 		{
+			Desc:   "uintptr",
+			Input:  "\x00\x00\x00\x00\x07\x5b\xcd\x15",
+			Expect: uintptr(123456789),
+		},
+		{
 			Desc:   "float",
 			Input:  "\x40\xba\x85\x00\x00\x00\x00\x00",
 			Expect: 6789.0,
@@ -232,6 +253,16 @@ func TestDecode(t *testing.T) {
 			Desc:   "string",
 			Input:  "\x02ab",
 			Expect: "ab",
+		},
+		{
+			Desc:   "*string",
+			Input:  "&\x02:)",
+			Expect: pstr(":)"),
+		},
+		{
+			Desc:   "*string",
+			Input:  "0",
+			Expect: (*string)(nil),
 		},
 		{
 			Desc:   "map",
@@ -326,4 +357,8 @@ func TestProxy(t *testing.T) {
 	if got := <-victim; got != want {
 		t.Errorf("got %q through proxy, want %q", got, want)
 	}
+}
+
+func pstr(s string) *string {
+	return &s
 }

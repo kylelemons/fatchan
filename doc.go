@@ -51,6 +51,7 @@
 //
 // Disclaimer
 //
-// This package is still rough.  It probably leaks lots of goroutines all over
-// the place, for instance.  Bug reports, fixes, etc are all welcome!
+// This package is still rough, and the API is subject to change.  It probably
+// leaks lots of goroutines all over the place, for instance.  Bug reports,
+// fixes, etc are all welcome!
 package fatchan
