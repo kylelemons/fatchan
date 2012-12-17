@@ -14,38 +14,44 @@ import (
 	"time"
 )
 
+var debug = false
+
 // For consistency:
 var endian = binary.BigEndian
 
 var nextSID uint64 = 0
 
-type register struct {
-	cid  uint64
-	data chan []byte
-}
-type unregister struct {
-	cid uint64
-}
-
 type Transport struct {
-	// Transport, communication, and locks
+	// Transport
 	write sync.Mutex
-	reg   chan register
-	unreg chan unregister
-	done  chan bool
 	rwc   io.ReadWriteCloser
+
+	// Control channels
+	query  chan query   // Requires round-trip
+	msg    chan message // Fire and forget
+	done   chan bool    // Closed when Transport completes
+	chunks chan chunk   // Incoming messages
+	genCID chan uint64  // Next available CID
 
 	// Error callback
 	err func(sid, cid uint64, err error)
 
 	// Channel identifiers
-	sid     uint64
-	nextCID uint64
-	cidrw   sync.RWMutex
-	cid     map[interface{}]uint64
+	implicit uint64
+	sid      uint64
+}
+
+func (t *Transport) debug(format string, args ...interface{}) {
+	if !debug {
+		return
+	}
+	fmt.Printf("[%2d] DEBUG: %s\n", t.sid, fmt.Sprintf(format, args...))
 }
 
 func logError(sid, cid uint64, err error) {
+	if err == io.EOF {
+		return
+	}
 	log.Printf("fatchan[sid=%d,cid=%d] error: %s", sid, cid, err)
 }
 
@@ -61,23 +67,28 @@ func New(rwc io.ReadWriteCloser, onError func(sid, cid uint64, err error)) *Tran
 		onError = logError
 	}
 	t := &Transport{
-		reg:   make(chan register),
-		unreg: make(chan unregister),
-		done:  make(chan bool),
-		rwc:   rwc,
-		err:   onError,
-		sid:   atomic.AddUint64(&nextSID, 1),
-		cid:   make(map[interface{}]uint64),
+		rwc:    rwc,
+		query:  make(chan query),
+		msg:    make(chan message, 32),
+		done:   make(chan bool),
+		chunks: make(chan chunk, 32),
+		genCID: make(chan uint64),
+		err:    onError,
+		sid:    atomic.AddUint64(&nextSID, 1),
 	}
 	go t.manage()
+	go t.incoming()
 	return t
 }
 
 // Close closes the underlying transport and waits for the manage loop to
 // complete before returning.
 func (t *Transport) Close() error {
-	err := t.rwc.Close()
+	t.debug("close")
+	close(t.query)
 	<-t.done
+	err := t.rwc.Close()
+	t.debug("close complete")
 	return err
 }
 
@@ -91,76 +102,124 @@ func (t *Transport) SID() uint64 {
 // valid CIDs are greater than zero, thus if the channel has never been a part
 // of this transport, the returned ID will be 0.
 func (t *Transport) CID(channel interface{}) uint64 {
-	t.cidrw.RLock()
-	defer t.cidrw.RUnlock()
-	return t.cid[channel]
-}
-
-func (t *Transport) setCID(channel interface{}, cid uint64) {
-	t.cidrw.Lock()
-	defer t.cidrw.Unlock()
-	t.cid[channel] = cid
+	q := &getChanID{
+		channel: channel,
+		done:    make(done, 1),
+	}
+	t.query <- q
+	<-q.done
+	return q.cid
 }
 
 func (t *Transport) manage() {
-	defer close(t.reg)
+	// Internal state
+	var (
+		cids    = map[interface{}]uint64{} // cids[channel] = cid
+		chans   = map[uint64]chan []byte{} // chans[cid] = chan
+		nextCID = uint64(1)
+	)
+	var (
+		pendingAlloc    = map[uint64]chan struct{}{}
+		pendingExplicit = map[uint64]*explicitID{}
+		pendingImplicit = map[uint64]*implicitID{}
+	)
+
+	// Let Close call return
 	defer close(t.done)
-	chans := map[uint64]chan []byte{}
+
+	// Close all channels on close
 	defer func() {
 		for _, ch := range chans {
 			close(ch)
 		}
+		t.debug("all toChan closed")
 	}()
 
-	type chunk struct {
-		cid  uint64
-		data []byte
-	}
-	chunks := make(chan chunk, 32)
-	go func() {
-		defer close(chunks)
-		br := bufio.NewReader(t.rwc)
-		for {
-			// Read cid
-			cid, err := binary.ReadUvarint(br)
-			if err != nil {
-				t.err(t.sid, 0, err)
-				return
-			}
-
-			// Read size
-			size, err := binary.ReadUvarint(br)
-			if err != nil {
-				t.err(t.sid, 0, err)
-				return
-			}
-
-			// Handle close message explicitly
-			if size == 0 {
-				chunks <- chunk{cid, nil}
-				continue
-			}
-
-			// Read data
-			data := make([]byte, size)
-			if _, err := io.ReadFull(br, data); err != nil {
-				t.err(t.sid, 0, err)
-				return
-			}
-
-			// Send the chunk!
-			chunks <- chunk{cid, data}
-		}
-	}()
-
+nextMessage:
 	for {
 		select {
-		case c, ok := <-chunks:
+		// Handle incoming chunks
+		case c, ok := <-t.chunks:
 			if !ok {
 				return
 			}
+			t.debug("incoming %#v", c)
+
+			// Handle control messages
+			if c.cid == 0 {
+				if len(c.data) < 1 {
+					t.err(t.sid, 0, fmt.Errorf("fatchan: bad attempt to close control channel"))
+					break
+				}
+				typ, data := c.data[0], c.data[1:]
+				switch typ {
+				case 'X', 'I':
+					// Reuse the data for the reply
+					reply := c.data
+					reply[0] = 'A' // assume ack
+
+					// Decode the data
+					cid, _ := binary.Uvarint(data)
+					t.debug("[%d] attempting alloc", cid)
+
+					// Explicit allocations can duplicate, but only remotely
+					if typ != 'X' {
+						// TODO(kevlar): optimize?
+						for _, id := range cids {
+							if id == cid {
+								reply[0] = 'N'
+							}
+						}
+					}
+
+					if reply[0] == 'A' {
+						// Notify a pending allocation or mark it for short-circuit
+						if alloc, ok := pendingAlloc[cid]; ok {
+							t.debug("[%d] pending alloc found", cid)
+							close(alloc)
+						} else {
+							t.debug("[%d] storing available alloc", cid)
+							pendingAlloc[cid] = nil
+						}
+					} else {
+						t.debug("[%d] failed alloc", cid)
+					}
+
+					// Make sure the nextCID is high enough (always)
+					if cid >= nextCID {
+						nextCID = cid + 1
+					}
+					t.writeBuf(0, bytes.NewBuffer(reply))
+				case 'A', 'N':
+					// Decode the data
+					ack := typ == 'A'
+					cid, _ := binary.Uvarint(data)
+					t.debug("[%d] alloc ack=%v", cid, ack)
+
+					if exp, ok := pendingExplicit[cid]; ok {
+						var err error
+						if !ack {
+							err = fmt.Errorf("fatchan: failed to allocate explicit id %v", cid)
+							delete(cids, exp.channel)
+						}
+						exp.Done(err)
+					} else if imp, ok := pendingImplicit[cid]; ok {
+						var err error
+						if !ack {
+							err = fmt.Errorf("fatchan: failed to allocate implicit id %v", cid)
+							delete(cids, imp.channel)
+						}
+						imp.Done(err)
+					} else {
+						t.err(t.sid, cid, fmt.Errorf("fatchan: [%d] no pending request for %cCK", typ))
+					}
+				}
+				break
+			}
+
 			ch, ok := chans[c.cid]
 			if !ok {
+				t.debug("unknown cid %#v", c)
 				t.err(t.sid, c.cid, fmt.Errorf("unknown cid %d with data %q", c.cid, c.data))
 				continue
 			}
@@ -169,12 +228,126 @@ func (t *Transport) manage() {
 				close(ch)
 				continue
 			}
+			t.debug("dispatch %d %q", c.cid, c.data)
 			ch <- c.data
-		case reg := <-t.reg:
-			chans[reg.cid] = reg.data
-		case unreg := <-t.unreg:
-			delete(chans, unreg.cid)
+
+		// Handle queries
+		case q, ok := <-t.query:
+			if !ok {
+				t.debug("query closed")
+				return
+			}
+
+			var err error
+			switch q := q.(type) {
+			case *explicitID:
+				// TODO(kevlar): optimize?
+				found := false
+				for _, id := range cids {
+					if id == q.cid {
+						found = true
+					}
+				}
+				if found {
+					err = fmt.Errorf("fatchan: duplicate Channel ID %v", q.cid)
+					break
+				}
+				cids[q.channel] = q.cid
+
+				// Make sure the nextCID is high enough (always)
+				if q.cid >= nextCID {
+					nextCID = q.cid + 1
+				}
+
+				// Store the pending
+				pendingExplicit[q.cid] = q
+
+				// Send the notification
+				var raw [8]byte
+				raw[0] = 'X'
+				n := 1 + binary.PutUvarint(raw[1:], q.cid)
+				t.writeBuf(0, bytes.NewBuffer(raw[:n]))
+				continue nextMessage
+			case *implicitID:
+				q.cid, nextCID = nextCID, nextCID+1
+				cids[q.channel] = q.cid
+
+				// Make sure the nextCID is high enough (always)
+				if q.cid >= nextCID {
+					nextCID = q.cid + 1
+				}
+
+				// Store the pending
+				pendingImplicit[q.cid] = q
+
+				// Send the notification
+				var raw [8]byte
+				raw[0] = 'I'
+				n := 1 + binary.PutUvarint(raw[1:], q.cid)
+				t.writeBuf(0, bytes.NewBuffer(raw[:n]))
+				continue nextMessage
+			case *register:
+				chans[q.cid] = q.data
+			case *getChanID:
+				q.cid = cids[q.channel]
+			default:
+				err = fmt.Errorf("fatchan: unknown query %s", q)
+			}
+			q.Done(err)
+
+		// Handle messages
+		case m := <-t.msg:
+			switch m := m.(type) {
+			case *unregister:
+				delete(chans, m.cid)
+			default:
+				log.Printf("fatchan: unknown message %s", m)
+			}
 		}
+	}
+}
+
+type chunk struct {
+	cid  uint64
+	data []byte
+}
+
+func (t *Transport) incoming() {
+	defer close(t.chunks)
+	br := bufio.NewReader(t.rwc)
+	for {
+		// Read cid
+		cid, err := binary.ReadUvarint(br)
+		if err != nil {
+			t.debug("uvarint read %#v", err)
+			t.err(t.sid, 0, err)
+			return
+		}
+
+		// Read size
+		size, err := binary.ReadUvarint(br)
+		if err != nil {
+			t.err(t.sid, 0, err)
+			return
+		}
+
+		// Handle close message explicitly
+		if size == 0 {
+			t.chunks <- chunk{cid, nil}
+			t.debug("close from %#v", cid)
+			continue
+		}
+
+		// Read data
+		data := make([]byte, size)
+		if _, err := io.ReadFull(br, data); err != nil {
+			t.err(t.sid, 0, err)
+			return
+		}
+
+		// Send the chunk!
+		t.debug("read %#v", chunk{cid, data})
+		t.chunks <- chunk{cid, data}
 	}
 }
 
@@ -185,43 +358,31 @@ func (t *Transport) manage() {
 //
 // FromChan should not be called after values are sent over a fatchan connected
 // to this transport.
-func (t *Transport) FromChan(channel interface{}) (sid, cid uint64, err error) {
-	return t.fromChan(reflect.ValueOf(channel))
+func (t *Transport) FromChan(channel interface{}) (cid uint64, err error) {
+	cid = atomic.AddUint64(&t.implicit, 1)
+	q := &explicitID{
+		cid:     cid,
+		channel: channel,
+		done:    make(done, 1),
+	}
+	t.query <- q
+	if err := <-q.done; err != nil {
+		return cid, err
+	}
+	t.debug("successfully allocated explicit fromChan %v", cid)
+	return cid, t.fromChan(cid, reflect.ValueOf(channel))
 }
 
-func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
-	sid, cid := t.sid, atomic.AddUint64(&t.nextCID, 1)
-	t.setCID(cval.Interface(), cid)
-
+func (t *Transport) fromChan(cid uint64, cval reflect.Value) error {
 	// Type check! woo
 	if cval.Kind() != reflect.Chan {
-		return sid, cid, fmt.Errorf("fatchan: cannot connect a %s - must be a channel", cval.Type())
+		return fmt.Errorf("fatchan: cannot connect a %s - must be a channel", cval.Type())
 	}
 	if cval.Type().ChanDir()&reflect.RecvDir == 0 {
-		return sid, cid, fmt.Errorf("fatchan: cannot connect a %s - send-only channel", cval.Type())
+		return fmt.Errorf("fatchan: cannot connect a %s - send-only channel", cval.Type())
 	}
 
-	var raw [8]byte
-	send := func(buf *bytes.Buffer) error {
-		t.write.Lock()
-		defer t.write.Unlock()
-
-		// Send the cid
-		n := binary.PutUvarint(raw[:], cid)
-		if _, err := t.rwc.Write(raw[:n]); err != nil {
-			return err
-		}
-		// Send the length
-		n = binary.PutUvarint(raw[:], uint64(buf.Len()))
-		if _, err := t.rwc.Write(raw[:n]); err != nil {
-			return err
-		}
-		// Send the bytes
-		if _, err := io.Copy(t.rwc, buf); err != nil {
-			return err
-		}
-		return nil
-	}
+	sid := t.sid
 
 	go func() {
 		buf := new(bytes.Buffer)
@@ -232,7 +393,8 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 			// Wait for an object from the channel
 			v, ok := cval.Recv()
 			if !ok {
-				send(buf)
+				// send close message
+				t.writeBuf(cid, buf)
 				return
 			}
 
@@ -243,22 +405,48 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 			}
 
 			// Send the encoding
-			if err := send(buf); err != nil {
+			if err := t.writeBuf(cid, buf); err != nil {
 				t.err(sid, cid, err)
 				break
 			}
 		}
+		// Drain the channel to close
 		for {
 			v, ok := cval.Recv()
 			if !ok {
 				break
 			}
-			t.err(sid, cid, fmt.Errorf("discarding %+v - channel closed", v))
+			t.err(sid, cid, fmt.Errorf("discarding %+v - channel closed due to error", v))
 		}
+		// Send EOF
 		t.err(sid, cid, io.EOF)
 	}()
 
-	return sid, cid, nil
+	return nil
+}
+
+func (t *Transport) writeBuf(cid uint64, buf *bytes.Buffer) error {
+	t.write.Lock()
+	defer t.write.Unlock()
+
+	t.debug("write %#v", chunk{cid, buf.Bytes()})
+
+	var raw [8]byte
+	// Send the cid
+	n := binary.PutUvarint(raw[:], cid)
+	if _, err := t.rwc.Write(raw[:n]); err != nil {
+		return err
+	}
+	// Send the length
+	n = binary.PutUvarint(raw[:], uint64(buf.Len()))
+	if _, err := t.rwc.Write(raw[:n]); err != nil {
+		return err
+	}
+	// Send the bytes
+	if _, err := io.Copy(t.rwc, buf); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ToChan will decode objects from the wire into the given channel.
@@ -268,51 +456,70 @@ func (t *Transport) fromChan(cval reflect.Value) (uint64, uint64, error) {
 //
 // ToChan should not be called after values are sent over a fatchan connected
 // to this transport.
-func (t *Transport) ToChan(channel interface{}) (sid, cid uint64, err error) {
-	return t.toChan(reflect.ValueOf(channel))
+func (t *Transport) ToChan(channel interface{}) (cid uint64, err error) {
+	cid = atomic.AddUint64(&t.implicit, 1)
+	q := &explicitID{
+		cid:     cid,
+		channel: channel,
+		done:    make(done, 1),
+	}
+	t.query <- q
+	if err := <-q.done; err != nil {
+		return cid, err
+	}
+	t.debug("successfully allocated explicit toChan %v", cid)
+	return cid, t.toChan(cid, reflect.ValueOf(channel))
 }
 
-func (t *Transport) toChan(cval reflect.Value) (uint64, uint64, error) {
-	sid, cid := t.sid, atomic.AddUint64(&t.nextCID, 1)
-	t.setCID(cval.Interface(), cid)
-
+func (t *Transport) toChan(cid uint64, cval reflect.Value) error {
 	// Type check! woo
 	if cval.Kind() != reflect.Chan {
-		return sid, cid, fmt.Errorf("fatchan: cannot connect a %s - must be a channel", cval.Type())
+		return fmt.Errorf("fatchan: cannot connect a %s - must be a channel", cval.Type())
 	}
 	if cval.Type().ChanDir()&reflect.SendDir == 0 {
-		return sid, cid, fmt.Errorf("fatchan: cannot connect a %s - recieve-only channel", cval.Type())
+		return fmt.Errorf("fatchan: cannot connect a %s - recieve-only channel", cval.Type())
 	}
 
-	// Register our data
+	// Register our channel
 	recv := make(chan []byte, 32)
-	t.reg <- register{cid, recv}
-
-	// Peruse the element type
-	etyp := cval.Type().Elem()
+	reg := &register{
+		cid:  cid,
+		data: recv,
+		done: make(done, 1),
+	}
+	t.query <- reg
+	<-reg.done
+	sid, cid := t.sid, reg.cid
 
 	go func() {
-		defer cval.Close()
+		// Close the channel when we return
+		defer cval.Close() // TODO(kevlar): Catch close of closed channel?
+
+		// Unregister the channel when we return
 		defer func() {
 			select {
-			case t.unreg <- unregister{cid}:
+			case t.msg <- &unregister{cid: cid}:
 			case <-time.After(10 * time.Millisecond):
 				// TODO(kevlar): Is this prefereable to closing the channel
-				// and catching the panic?  I'm not sure.
+				// and catching the panic?  I'm not sure.  Would it be possible
+				// to use a WaitGroup to know when to close the query channel?
 			}
 		}()
 
+		etyp := cval.Type().Elem()
 		for data := range recv {
+			t.debug("[%d] new data %q", cid, data)
 			v := reflect.New(etyp).Elem()
 			if err := t.decodeValue(bytes.NewReader(data), v); err != nil {
-				t.err(t.sid, cid, err)
+				t.err(sid, cid, err)
 				return
 			}
+			t.debug("[%d] sending %#v", cid, v.Interface())
 			cval.Send(v)
 		}
 	}()
 
-	return sid, cid, nil
+	return nil
 }
 
 func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
@@ -418,11 +625,28 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 func (t *Transport) encodeChan(w io.Writer, val reflect.Value, tag string) error {
 	var cid uint64
 	var err error
+	for i := 0; i < 100; i++ {
+		q := &implicitID{
+			channel: val.Interface(),
+			done:    make(done, 1),
+		}
+		t.query <- q
+		err = <-q.done
+		cid = q.cid
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.debug("failed to allocate implicit channel id: %s", err)
+		return err
+	}
+
 	switch tag {
 	case "reply", "":
-		_, cid, err = t.toChan(val)
+		err = t.toChan(cid, val)
 	case "request":
-		_, cid, err = t.fromChan(val)
+		err = t.fromChan(cid, val)
 	default:
 		return fmt.Errorf(`unrecognized fatchan directive %q, want "request" or "reply"`)
 	}
@@ -610,7 +834,7 @@ func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
 
 	var name string
 	var rtag string
-	var rcid uint64
+	var cid uint64
 
 	if err := t.decodeValue(r, reflect.ValueOf(&name).Elem()); err != nil {
 		return err
@@ -618,7 +842,7 @@ func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
 	if err := t.decodeValue(r, reflect.ValueOf(&rtag).Elem()); err != nil {
 		return err
 	}
-	if err := t.decodeValue(r, reflect.ValueOf(&rcid).Elem()); err != nil {
+	if err := t.decodeValue(r, reflect.ValueOf(&cid).Elem()); err != nil {
 		return err
 	}
 
@@ -629,13 +853,12 @@ func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
 		return fmt.Errorf("decoded channel tag is %q, want %q", got, want)
 	}
 
-	var cid uint64
 	var err error
 	switch tag {
 	case "reply", "":
-		_, cid, err = t.fromChan(val)
+		err = t.fromChan(cid, val)
 	case "request":
-		_, cid, err = t.toChan(val)
+		err = t.toChan(cid, val)
 	default:
 		return fmt.Errorf(`unrecognized fatchan directive %q, want "request" or "reply"`)
 	}
@@ -643,9 +866,55 @@ func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
 		return err
 	}
 
-	if got, want := rcid, cid; got != want {
-		return fmt.Errorf("decoded channel id is %v, want %v", got, want)
-	}
-
 	return nil
+}
+
+/******* Queries *******/
+
+// queries require a response
+type query interface {
+	Done(error)
+}
+
+type done chan error
+
+func (ch done) Done(err error) {
+	select {
+	case ch <- err:
+	default:
+		panic("synchronous done chan or double Done()")
+	}
+}
+
+type explicitID struct {
+	channel interface{} // IN: Channel to assign
+	cid     uint64      // IN: Channel ID
+	done
+}
+
+type implicitID struct {
+	channel interface{} // IN:  Channel to assign
+	cid     uint64      // OUT: Channel ID
+	done
+}
+
+type register struct {
+	cid  uint64      // IN: Channel ID
+	data chan []byte // IN: Channel on which to send data for this Channel ID
+	done
+}
+
+type getChanID struct {
+	channel interface{} // IN:  Channel to look up
+	cid     uint64      // OUT: Channel ID (or 0 if not found)
+	done
+}
+
+/******* Messages *******/
+
+// messages do not require a response
+type message interface{}
+
+type unregister struct {
+	cid uint64 // IN: Channel ID
 }
