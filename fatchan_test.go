@@ -31,7 +31,7 @@ func TestEndToEnd(t *testing.T) {
 	server := make(chan Request)
 	go func() {
 		sxport := New(remote, ohNo)
-		if _, _, err := sxport.ToChan(server); err != nil {
+		if err := sxport.ToChan(1, server); err != nil {
 			t.Errorf("tochan: %s", err)
 		}
 		if got, want := sxport.CID(server), uint64(1); got != want {
@@ -60,7 +60,7 @@ func TestEndToEnd(t *testing.T) {
 		client := make(chan Request)
 
 		cxport := New(local, ohNo)
-		if _, _, err := cxport.FromChan(client); err != nil {
+		if err := cxport.FromChan(1, client); err != nil {
 			t.Errorf("fromchan: %s", err)
 		}
 		if got, want := cxport.CID(client), uint64(1); got != want {
@@ -199,14 +199,16 @@ func TestEncode(t *testing.T) {
 
 	for _, test := range tests {
 		buf := new(bytes.Buffer)
-		conn, _ := net.Pipe()
+		conn, rconn := net.Pipe()
 		xport := New(conn, nil)
+		rxport := New(rconn, nil)
 		xport.encodeValue(buf, reflect.ValueOf(test.Value))
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
 			t.Errorf("%s: ... in hex: got %x, want %x", test.Desc, got, want)
 		}
 		xport.Close()
+		rxport.Close()
 	}
 }
 
@@ -303,8 +305,9 @@ func TestDecode(t *testing.T) {
 
 	for _, test := range tests {
 		zero := reflect.New(reflect.TypeOf(test.Expect)).Elem()
-		conn, _ := net.Pipe()
+		conn, rconn := net.Pipe()
 		xport := New(conn, nil)
+		rxport := New(rconn, nil)
 		if err := xport.decodeValue(strings.NewReader(test.Input), zero); err != nil {
 			t.Errorf("%s: decode(%q): %s", test.Desc, test.Input, err)
 		}
@@ -320,16 +323,19 @@ func TestDecode(t *testing.T) {
 			t.Errorf("%s: decode(%q) = %#v, want %#v", test.Desc, test.Input, got, want)
 		}
 		xport.Close()
+		rxport.Close()
 	}
 }
 
 func TestServerDisconnect(t *testing.T) {
 	spipe, cpipe := net.Pipe()
+	cxport := New(cpipe, nil)
+	sxport := New(spipe, nil)
+	defer sxport.Close()
 
 	// Client side
-	cxport := New(cpipe, nil)
 	client := make(chan string)
-	cxport.ToChan(client)
+	cxport.ToChan(1, client)
 	defer cxport.Close()
 
 	// Disconnect the server
@@ -349,25 +355,32 @@ func TestServerDisconnect(t *testing.T) {
 }
 
 func TestProxy(t *testing.T) {
+	// A <-> B
 	apipe, b1pipe := net.Pipe()
+	axport := New(apipe, nil)
+	b1xport := New(b1pipe, nil)
+	defer axport.Close()
+	defer b1xport.Close()
+
+	// B <-> C
 	b2pipe, cpipe := net.Pipe()
+	b2xport := New(b2pipe, nil)
+	cxport := New(cpipe, nil)
+	defer b2xport.Close()
+	defer cxport.Close()
 
 	// A
 	achan := make(chan chan string)
-	axport := New(apipe, nil)
-	axport.FromChan(achan)
+	axport.FromChan(1, achan)
 
 	// B
 	bchan := make(chan chan string)
-	b1xport := New(b1pipe, nil)
-	b2xport := New(b2pipe, nil)
-	b1xport.ToChan(bchan)
-	b2xport.FromChan(bchan)
+	b1xport.ToChan(1, bchan)
+	b2xport.FromChan(1, bchan)
 
 	// C
 	cchan := make(chan chan string)
-	cxport := New(cpipe, nil)
-	cxport.ToChan(cchan)
+	cxport.ToChan(1, cchan)
 
 	victim := make(chan string)
 	achan <- victim

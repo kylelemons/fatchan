@@ -31,7 +31,7 @@ func ExampleTransport() {
 
 		// Connect the channel
 		requests := make(chan Request)
-		xport.ToChan(requests)
+		xport.ToChan(1, requests)
 
 		// Answer a request
 		req := <-requests
@@ -53,7 +53,7 @@ func ExampleTransport() {
 
 		// Connect the channel
 		requests := make(chan Request)
-		xport.FromChan(requests)
+		xport.FromChan(1, requests)
 
 		// Send a request
 		reply := make(chan map[rune]int)
@@ -97,7 +97,7 @@ func ExampleTransport_FromChan(conn net.Conn) {
 
 	// Register the channel
 	out := make(chan Request)
-	xport.FromChan(out)
+	xport.FromChan(1, out)
 
 	// Send the request
 	in := make(chan string)
@@ -121,7 +121,7 @@ func ExampleTransport_ToChan(conn net.Conn) {
 
 	// Register the channel
 	in := make(chan Request)
-	xport.ToChan(in)
+	xport.ToChan(1, in)
 
 	// Recieve a request
 	req := <-in

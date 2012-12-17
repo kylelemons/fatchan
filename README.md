@@ -16,8 +16,8 @@ The wire protocol is a sequence of value frames, each of which corresponds to a 
 being sent over a channel (or an indication that the channel is closed).  Each channel
 is identified by a monotonically increasing channel identifier.
 
-Frame
------
+Framing
+-------
 
 A frame must be written atomically and contains the following:
 
@@ -28,6 +28,27 @@ A frame must be written atomically and contains the following:
 All channel IDs are greater than zero.
 In order to indicate that a channel has been closed,
 a frame with packet length 0 (and thus no packet data) is sent.
+
+Control Messages
+----------------
+
+A frame with the Channel ID of 0 contains a control message.
+The first byte of the control message designates the message type,
+and the subsequent bytes are the encoding of the arguments.
+
+    Type Argument     Description
+    ---- ------------ -----------
+    'X'  cid uvarint  Create a new explicit channel with the given cid
+    'I'  cid uvarint  Create a new implicit channel with the given cid
+    'A'  cid uvarint  Acknowledge the channel with the given cid
+    'N'  cid uvarint  Nack the channel created for the given cid
+
+Protocol
+--------
+
+Before a channel can be used, it must be registered with the opposing side.
+Explicit channels should be registered before any values are sent over any
+fatchan channels.
 
 Value Encodings
 ===============
