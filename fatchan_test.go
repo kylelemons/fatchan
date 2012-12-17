@@ -24,70 +24,79 @@ func TestEndToEnd(t *testing.T) {
 	// Transport
 	local, remote := net.Pipe()
 
+	// Goroutines
+	done := make(chan string)
+
 	// Server side
 	server := make(chan Request)
-	sxport := New(remote, ohNo)
-	if _, _, err := sxport.ToChan(server); err != nil {
-		t.Errorf("tochan: %s", err)
-	}
-	if got, want := sxport.CID(server), uint64(1); got != want {
-		t.Errorf("server cid = %v, want %v", got, want)
-	}
-
-	// Client side
-	client := make(chan Request)
-	cxport := New(local, ohNo)
-	if _, _, err := cxport.FromChan(client); err != nil {
-		t.Errorf("fromchan: %s", err)
-	}
-	if got, want := cxport.CID(client), uint64(1); got != want {
-		t.Errorf("client cid = %v, want %v", got, want)
-	}
-
 	go func() {
-		req := <-server
-		defer close(req.Output)
-		t.Logf("Got request: %#v", req)
-		req.Output <- req.Input
+		sxport := New(remote, ohNo)
+		if _, _, err := sxport.ToChan(server); err != nil {
+			t.Errorf("tochan: %s", err)
+		}
+		if got, want := sxport.CID(server), uint64(1); got != want {
+			t.Errorf("server cid = %v, want %v", got, want)
+		}
+
+		req, ok := <-server
+		if !ok {
+			t.Errorf("client closed before request")
+		} else {
+			t.Logf("Got request: %#v", req)
+			req.Output <- req.Input
+		}
+		if _, ok = <-server; ok {
+			t.Errorf("excess requests received")
+		}
+
+		close(req.Output)
+		sxport.Close()
+		done <- "server"
 	}()
 
-	want := "test"
-	reply := make(chan string)
-	client <- Request{
-		Input:  want,
-		Output: reply,
-	}
+	// Client side
+	go func() {
+		want := "test"
+		client := make(chan Request)
 
-	select {
-	case got := <-reply:
-		if got != want {
+		cxport := New(local, ohNo)
+		if _, _, err := cxport.FromChan(client); err != nil {
+			t.Errorf("fromchan: %s", err)
+		}
+		if got, want := cxport.CID(client), uint64(1); got != want {
+			t.Errorf("client cid = %v, want %v", got, want)
+		}
+
+		reply := make(chan string)
+		client <- Request{
+			Input:  want,
+			Output: reply,
+		}
+
+		got, ok := <-reply
+		if !ok {
+			t.Errorf("server closed before reply")
+		} else if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
-	case <-time.After(100 * time.Millisecond):
-		t.Errorf("timeout in receive")
-		return
-	}
 
-	select {
-	case _, ok := <-reply:
-		if ok {
+		close(client)
+		cxport.Close()
+
+		if _, ok = <-reply; ok {
 			t.Errorf("received actual value??")
 		}
-	case <-time.After(100 * time.Millisecond):
-		t.Errorf("channel did not get closed!")
+
+		done <- "client"
+	}()
+
+	if got, want := <-done, "client"; got != want {
+		t.Errorf("%s finished first, want %s", got, want)
 	}
-
-	// Cleanup
-	close(client)
-	cxport.Close()
-	sxport.Close()
+	if got, want := <-done, "server"; got != want {
+		t.Errorf("%s finished second, want %s", got, want)
+	}
 }
-
-type buffer struct {
-	bytes.Buffer
-}
-
-func (buffer) Close() error { return nil }
 
 func TestEncode(t *testing.T) {
 	type example struct {
@@ -190,7 +199,8 @@ func TestEncode(t *testing.T) {
 
 	for _, test := range tests {
 		buf := new(bytes.Buffer)
-		xport := New(new(buffer), nil)
+		conn, _ := net.Pipe()
+		xport := New(conn, nil)
 		xport.encodeValue(buf, reflect.ValueOf(test.Value))
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
@@ -293,7 +303,8 @@ func TestDecode(t *testing.T) {
 
 	for _, test := range tests {
 		zero := reflect.New(reflect.TypeOf(test.Expect)).Elem()
-		xport := New(new(buffer), nil)
+		conn, _ := net.Pipe()
+		xport := New(conn, nil)
 		if err := xport.decodeValue(strings.NewReader(test.Input), zero); err != nil {
 			t.Errorf("%s: decode(%q): %s", test.Desc, test.Input, err)
 		}
