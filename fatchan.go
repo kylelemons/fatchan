@@ -625,6 +625,17 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 func (t *Transport) encodeChan(w io.Writer, val reflect.Value, tag string) error {
 	var cid uint64
 	var err error
+
+	etyp := val.Type().Elem()
+	t.encodeValue(w, reflect.ValueOf(etyp.Name()))
+	t.encodeValue(w, reflect.ValueOf(tag))
+
+	// Handle nil channels
+	if val.IsNil() {
+		t.encodeValue(w, reflect.ValueOf(cid)) // 0
+		return nil
+	}
+
 	for i := 0; i < 100; i++ {
 		q := &implicitID{
 			channel: val.Interface(),
@@ -654,9 +665,6 @@ func (t *Transport) encodeChan(w io.Writer, val reflect.Value, tag string) error
 		return err
 	}
 
-	etyp := val.Type().Elem()
-	t.encodeValue(w, reflect.ValueOf(etyp.Name()))
-	t.encodeValue(w, reflect.ValueOf(tag))
 	t.encodeValue(w, reflect.ValueOf(cid))
 	return nil
 }
@@ -830,7 +838,6 @@ func (t *Transport) decodeArrayish(r reader, val reflect.Value) error {
 }
 
 func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
-	val.Set(reflect.MakeChan(val.Type(), 0))
 
 	var name string
 	var rtag string
@@ -852,6 +859,14 @@ func (t *Transport) decodeChan(r reader, val reflect.Value, tag string) error {
 	if got, want := rtag, tag; got != want {
 		return fmt.Errorf("decoded channel tag is %q, want %q", got, want)
 	}
+
+	if cid == 0 {
+		val.Set(reflect.Zero(val.Type()))
+		return nil
+	}
+
+	// Make the channel
+	val.Set(reflect.MakeChan(val.Type(), 0))
 
 	var err error
 	switch tag {

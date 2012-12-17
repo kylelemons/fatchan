@@ -190,6 +190,11 @@ func TestEncode(t *testing.T) {
 			Encoding: "\x07request\x01\x06string\x05reply\x01",
 		},
 		{
+			Desc:     "request nil",
+			Value:    request{(chan string)(nil)},
+			Encoding: "\x07request\x01\x06string\x05reply\x00",
+		},
+		{
 			Desc:     "proxy",
 			Value:    proxy{make(chan string)},
 			Encoding: "\x05proxy\x01\x06string\x07request\x01",
@@ -298,7 +303,12 @@ func TestDecode(t *testing.T) {
 		{
 			Desc:   "struct with chan",
 			Input:  "\x07request\x01\x06string\x05reply\x01",
-			Expect: request{},
+			Expect: request{make(chan string)},
+		},
+		{
+			Desc:   "request nil",
+			Input:  "\x07request\x01\x06string\x05reply\x00",
+			Expect: request{(chan string)(nil)},
 		},
 		{
 			Desc:   "byte > 127",
@@ -318,7 +328,11 @@ func TestDecode(t *testing.T) {
 		got := zero.Interface()
 		switch got := got.(type) {
 		case request:
-			if got.Reply == nil {
+			if test.Expect.(request).Reply == nil {
+				if got.Reply != nil {
+					t.Errorf("%s: decode(%q).Reply != nil, want nil chan", test.Desc, test.Input)
+				}
+			} else if got.Reply == nil {
 				t.Errorf("%s: decode(%q).Reply == nil, want chan value", test.Desc, test.Input)
 			}
 			continue
