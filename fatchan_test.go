@@ -31,8 +31,10 @@ func TestEndToEnd(t *testing.T) {
 	server := make(chan Request)
 	go func() {
 		sxport := New(remote, ohNo)
-		if err := sxport.ToChan(1, server); err != nil {
+		if cid, err := sxport.ToChan(server); err != nil {
 			t.Errorf("tochan: %s", err)
+		} else if cid != 1 {
+			t.Errorf("returned cid = %v, want 1")
 		}
 		if got, want := sxport.CID(server), uint64(1); got != want {
 			t.Errorf("server cid = %v, want %v", got, want)
@@ -60,8 +62,10 @@ func TestEndToEnd(t *testing.T) {
 		client := make(chan Request)
 
 		cxport := New(local, ohNo)
-		if err := cxport.FromChan(1, client); err != nil {
+		if cid, err := cxport.FromChan(client); err != nil {
 			t.Errorf("fromchan: %s", err)
+		} else if cid != 1 {
+			t.Errorf("returned cid = %v, want 1")
 		}
 		if got, want := cxport.CID(client), uint64(1); got != want {
 			t.Errorf("client cid = %v, want %v", got, want)
@@ -335,7 +339,7 @@ func TestServerDisconnect(t *testing.T) {
 
 	// Client side
 	client := make(chan string)
-	cxport.ToChan(1, client)
+	cxport.ToChan(client)
 	defer cxport.Close()
 
 	// Disconnect the server
@@ -371,16 +375,16 @@ func TestProxy(t *testing.T) {
 
 	// A
 	achan := make(chan chan string)
-	axport.FromChan(1, achan)
+	axport.FromChan(achan)
 
 	// B
 	bchan := make(chan chan string)
-	b1xport.ToChan(1, bchan)
-	b2xport.FromChan(1, bchan)
+	b1xport.ToChan(bchan)
+	b2xport.FromChan(bchan)
 
 	// C
 	cchan := make(chan chan string)
-	cxport.ToChan(1, cchan)
+	cxport.ToChan(cchan)
 
 	victim := make(chan string)
 	achan <- victim
@@ -431,7 +435,7 @@ func TestWireProtocol(t *testing.T) {
 				defer xport.Close()
 
 				ch := make(chan chan string)
-				xport.FromChan(1, ch)
+				xport.FromChan(ch)
 				defer close(ch)
 
 				inner := make(chan string)
@@ -465,7 +469,7 @@ func TestWireProtocol(t *testing.T) {
 				defer xport.Close()
 
 				ch := make(chan chan string)
-				xport.FromChan(1, ch)
+				xport.FromChan(ch)
 				defer close(ch)
 
 				inner := make(chan string)

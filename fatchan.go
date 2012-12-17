@@ -37,7 +37,8 @@ type Transport struct {
 	err func(sid, cid uint64, err error)
 
 	// Channel identifiers
-	sid uint64
+	implicit uint64
+	sid      uint64
 }
 
 func (t *Transport) debug(format string, args ...interface{}) {
@@ -357,10 +358,8 @@ func (t *Transport) incoming() {
 //
 // FromChan should not be called after values are sent over a fatchan connected
 // to this transport.
-func (t *Transport) FromChan(cid uint64, channel interface{}) error {
-	if cid < 1 {
-		return fmt.Errorf("fatchan: channel ID must be positive")
-	}
+func (t *Transport) FromChan(channel interface{}) (cid uint64, err error) {
+	cid = atomic.AddUint64(&t.implicit, 1)
 	q := &explicitID{
 		cid:     cid,
 		channel: channel,
@@ -368,10 +367,10 @@ func (t *Transport) FromChan(cid uint64, channel interface{}) error {
 	}
 	t.query <- q
 	if err := <-q.done; err != nil {
-		return err
+		return cid, err
 	}
 	t.debug("successfully allocated explicit fromChan %v", cid)
-	return t.fromChan(cid, reflect.ValueOf(channel))
+	return cid, t.fromChan(cid, reflect.ValueOf(channel))
 }
 
 func (t *Transport) fromChan(cid uint64, cval reflect.Value) error {
@@ -457,7 +456,8 @@ func (t *Transport) writeBuf(cid uint64, buf *bytes.Buffer) error {
 //
 // ToChan should not be called after values are sent over a fatchan connected
 // to this transport.
-func (t *Transport) ToChan(cid uint64, channel interface{}) error {
+func (t *Transport) ToChan(channel interface{}) (cid uint64, err error) {
+	cid = atomic.AddUint64(&t.implicit, 1)
 	q := &explicitID{
 		cid:     cid,
 		channel: channel,
@@ -465,10 +465,10 @@ func (t *Transport) ToChan(cid uint64, channel interface{}) error {
 	}
 	t.query <- q
 	if err := <-q.done; err != nil {
-		return err
+		return cid, err
 	}
 	t.debug("successfully allocated explicit toChan %v", cid)
-	return t.toChan(cid, reflect.ValueOf(channel))
+	return cid, t.toChan(cid, reflect.ValueOf(channel))
 }
 
 func (t *Transport) toChan(cid uint64, cval reflect.Value) error {
