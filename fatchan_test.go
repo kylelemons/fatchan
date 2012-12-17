@@ -393,6 +393,124 @@ func TestProxy(t *testing.T) {
 	}
 }
 
+func TestWireProtocol(t *testing.T) {
+	type action func(desc string, apipe io.ReadWriter)
+
+	xpect := func(want, subdesc string) action {
+		return func(desc string, apipe io.ReadWriter) {
+			raw := make([]byte, len(want))
+			if n, err := io.ReadFull(apipe, raw); err != nil {
+				if n != 0 {
+					t.Errorf("%s: %s: partial read %q", desc, subdesc, raw[:n])
+				}
+				t.Fatalf("%s: %s: read: %s", desc, subdesc, err)
+			}
+			if got := string(raw); got != want {
+				t.Errorf("%s: %s: got %q, want %q", desc, subdesc, got, want)
+			}
+		}
+	}
+	write := func(data, desc string) action {
+		return func(subdesc string, apipe io.ReadWriter) {
+			if _, err := io.WriteString(apipe, data); err != nil {
+				t.Fatalf("%s: %s: write: %s", desc, subdesc, err)
+			}
+		}
+	}
+
+	tests := []struct {
+		Desc     string
+		Remote   func(net.Conn, chan bool)
+		Exchange []action
+	}{
+		{
+			Desc: "race condition",
+			Remote: func(bpipe net.Conn, done chan bool) {
+				defer close(done)
+				xport := New(bpipe, nil)
+				defer xport.Close()
+
+				ch := make(chan chan string)
+				xport.FromChan(1, ch)
+				defer close(ch)
+
+				inner := make(chan string)
+				ch <- inner
+
+				<-inner
+			},
+			Exchange: []action{
+				// Register the chan
+				xpect("\x00\x02X\x01", "register explicit"),
+				write("\x00\x02A\x01", "ack explicit"),
+
+				// Handshake about new channel
+				xpect("\x00\x02I\x02", "register implicit"),
+				write("\x00\x02A\x02", "ack implicit"),
+
+				// Receive new channel
+				xpect("\x01\x09\x06string\x00\x02", "chan value"),
+
+				// Send response ""
+				write("\x02\x01\x00", `respond ""`),
+
+				// Channel is closed
+				xpect("\x01\x00", "chan close"),
+			},
+		}, {
+			Desc: "race condition",
+			Remote: func(bpipe net.Conn, done chan bool) {
+				defer close(done)
+				xport := New(bpipe, nil)
+				defer xport.Close()
+
+				ch := make(chan chan string)
+				xport.FromChan(1, ch)
+				defer close(ch)
+
+				inner := make(chan string)
+				ch <- inner
+
+				<-inner
+			},
+			Exchange: []action{
+				// Register the chan
+				xpect("\x00\x02X\x01", "register explicit"),
+				write("\x00\x02A\x01", "ack explicit"),
+
+				// Handshake about new channel with race on CID=2
+				xpect("\x00\x02I\x02", "register implicit"),
+				write("\x00\x02I\x02", "implicit race"),
+				xpect("\x00\x02N\x02", "nack race"),
+				write("\x00\x02A\x02", "ack implicit"),
+
+				// Receive new channel
+				xpect("\x01\x09\x06string\x00\x02", "chan value"),
+
+				// Send response ""
+				write("\x02\x01\x00", `respond ""`),
+
+				// Channel is closed
+				xpect("\x01\x00", "chan close"),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		apipe, bpipe := net.Pipe()
+
+		// Manage the "remote" side automatically
+		done := make(chan bool)
+		go test.Remote(bpipe, done)
+
+		for _, f := range test.Exchange {
+			f(test.Desc, apipe)
+		}
+
+		<-done
+	}
+}
+
 func pstr(s string) *string {
 	return &s
 }

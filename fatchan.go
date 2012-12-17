@@ -253,6 +253,11 @@ nextMessage:
 				}
 				cids[q.channel] = q.cid
 
+				// Make sure the nextCID is high enough (always)
+				if q.cid >= nextCID {
+					nextCID = q.cid + 1
+				}
+
 				// Store the pending
 				pendingExplicit[q.cid] = q
 
@@ -266,12 +271,17 @@ nextMessage:
 				q.cid, nextCID = nextCID, nextCID+1
 				cids[q.channel] = q.cid
 
+				// Make sure the nextCID is high enough (always)
+				if q.cid >= nextCID {
+					nextCID = q.cid + 1
+				}
+
 				// Store the pending
 				pendingImplicit[q.cid] = q
 
 				// Send the notification
 				var raw [8]byte
-				raw[0] = 'X'
+				raw[0] = 'I'
 				n := 1 + binary.PutUvarint(raw[1:], q.cid)
 				t.writeBuf(0, bytes.NewBuffer(raw[:n]))
 				continue nextMessage
@@ -483,7 +493,7 @@ func (t *Transport) toChan(cid uint64, cval reflect.Value) error {
 
 	go func() {
 		// Close the channel when we return
-		defer cval.Close()
+		defer cval.Close() // TODO(kevlar): Catch close of closed channel?
 
 		// Unregister the channel when we return
 		defer func() {
