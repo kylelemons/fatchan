@@ -27,6 +27,7 @@ func BenchmarkSend(bench *testing.B) {
 	ach, bch := make(chan string), make(chan string)
 	axport.FromChan(ach)
 	bxport.ToChan(bch)
+	bench.SetBytes(int64(len("\x01\x05\x04test")))
 	for i := 0; i < bench.N; i++ {
 		ach <- "test"
 		<-bch
