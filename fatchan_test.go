@@ -16,9 +16,10 @@ func TestEndToEnd(t *testing.T) {
 		Output chan string `fatchan:"reply"`
 	}
 	ohNo := func(sid, cid uint64, err error) {
-		if err != io.EOF {
-			t.Logf("channel %d,%d: %s", sid, cid, err)
+		if err == io.EOF || err.Error() == "io: read/write on closed pipe" {
+			return
 		}
+		t.Logf("channel %d,%d: %s", sid, cid, err)
 	}
 
 	// Transport
@@ -44,7 +45,6 @@ func TestEndToEnd(t *testing.T) {
 		if !ok {
 			t.Errorf("client closed before request")
 		} else {
-			t.Logf("Got request: %#v", req)
 			req.Output <- req.Input
 		}
 		if _, ok = <-server; ok {
@@ -190,9 +190,14 @@ func TestEncode(t *testing.T) {
 			Encoding: "\x07request\x01\x06string\x05reply\x01",
 		},
 		{
-			Desc:     "request nil",
+			Desc:     "request nil chan",
 			Value:    request{(chan string)(nil)},
 			Encoding: "\x07request\x01\x06string\x05reply\x00",
+		},
+		{
+			Desc:     "request nil",
+			Value:    (*request)(nil),
+			Encoding: "0",
 		},
 		{
 			Desc:     "proxy",
@@ -209,9 +214,17 @@ func TestEncode(t *testing.T) {
 	for _, test := range tests {
 		buf := new(bytes.Buffer)
 		conn, rconn := net.Pipe()
-		xport := New(conn, nil)
-		rxport := New(rconn, nil)
-		xport.encodeValue(buf, reflect.ValueOf(test.Value))
+		fail := func(_, _ uint64, err error) {
+			if err == io.EOF || err.Error() == "io: read/write on closed pipe" {
+				return
+			}
+			t.Errorf("%s: %s", test.Desc, err)
+		}
+		xport := New(conn, fail)
+		rxport := New(rconn, fail)
+		if err := xport.encodeValue(buf, reflect.ValueOf(test.Value)); err != nil {
+			t.Errorf("%s: encode(%#v): %s", test.Desc, test.Value, err)
+		}
 		if got, want := buf.String(), test.Encoding; got != want {
 			t.Errorf("%s: encode(%#v) = %q, want %q", test.Desc, test.Value, got, want)
 			t.Errorf("%s: ... in hex: got %x, want %x", test.Desc, got, want)
@@ -306,9 +319,14 @@ func TestDecode(t *testing.T) {
 			Expect: request{make(chan string)},
 		},
 		{
-			Desc:   "request nil",
+			Desc:   "request nil chan",
 			Input:  "\x07request\x01\x06string\x05reply\x00",
 			Expect: request{(chan string)(nil)},
+		},
+		{
+			Desc:   "request nil",
+			Input:  "0",
+			Expect: (*request)(nil),
 		},
 		{
 			Desc:   "byte > 127",
@@ -320,8 +338,14 @@ func TestDecode(t *testing.T) {
 	for _, test := range tests {
 		zero := reflect.New(reflect.TypeOf(test.Expect)).Elem()
 		conn, rconn := net.Pipe()
-		xport := New(conn, nil)
-		rxport := New(rconn, nil)
+		fail := func(_, _ uint64, err error) {
+			if err == io.EOF || err.Error() == "io: read/write on closed pipe" {
+				return
+			}
+			t.Errorf("%s: %s", test.Desc, err)
+		}
+		xport := New(conn, fail)
+		rxport := New(rconn, fail)
 		if err := xport.decodeValue(strings.NewReader(test.Input), zero); err != nil {
 			t.Errorf("%s: decode(%q): %s", test.Desc, test.Input, err)
 		}
