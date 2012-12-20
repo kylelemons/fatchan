@@ -532,8 +532,8 @@ func (t *Transport) encodeValue(w io.Writer, val reflect.Value) error {
 			io.WriteString(w, "0")
 		} else {
 			io.WriteString(w, "&")
+			return t.encodeValue(w, val.Elem())
 		}
-		return t.encodeValue(w, val.Elem())
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		var raw [8]byte
 		varint := raw[:binary.PutVarint(raw[:], val.Int())]
