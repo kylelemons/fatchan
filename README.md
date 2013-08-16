@@ -126,3 +126,10 @@ Channels are encoded as follows:
 1. Name of element type (string)
 1. Directionality tag (string, "" / "reply" / "request")
 1. Channel ID (uvarint)
+
+Debugging
+---------
+
+You can selectively enable fatchan debugging by building your binary with the following `go` flag:
+
+  -ldflags='-X github.com/kylelemons/fatchan.debug true'
