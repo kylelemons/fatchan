@@ -119,9 +119,9 @@ func (t *Transport) manage() {
 		nextCID = uint64(1)
 	)
 	var (
-		pendingAlloc    = map[uint64]chan struct{}{}
-		pendingExplicit = map[uint64]*explicitID{}
-		pendingImplicit = map[uint64]*implicitID{}
+		pendingAlloc    = map[uint64][][]byte{}    // acknowledged channels awaiting register
+		pendingExplicit = map[uint64]*explicitID{} // explicit requests awaiting remote (n)ack
+		pendingImplicit = map[uint64]*implicitID{} // implicit requests awaiting remote (n)ack
 	)
 
 	// Let Close call return
@@ -160,7 +160,6 @@ nextMessage:
 
 					// Decode the data
 					cid, _ := binary.Uvarint(data)
-					t.debug("[%d] attempting alloc", cid)
 
 					// Explicit allocations can duplicate, but only remotely
 					if typ != 'X' {
@@ -173,14 +172,8 @@ nextMessage:
 					}
 
 					if reply[0] == 'A' {
-						// Notify a pending allocation or mark it for short-circuit
-						if alloc, ok := pendingAlloc[cid]; ok {
-							t.debug("[%d] pending alloc found", cid)
-							close(alloc)
-						} else {
-							t.debug("[%d] storing available alloc", cid)
-							pendingAlloc[cid] = nil
-						}
+						t.debug("[%d] awaiting register", cid)
+						pendingAlloc[cid] = nil
 					} else {
 						t.debug("[%d] failed alloc", cid)
 					}
@@ -219,7 +212,12 @@ nextMessage:
 
 			ch, ok := chans[c.cid]
 			if !ok {
-				t.debug("unknown cid %#v", c)
+				if pending, ok := pendingAlloc[c.cid]; ok {
+					t.debug("cid %#v is pending allocation, queueing %q", c.cid, c.data)
+					pendingAlloc[c.cid] = append(pending, c.data)
+					continue
+				}
+				t.debug("unknown cid %#v receiving data %q", c, c.data)
 				t.err(t.sid, c.cid, fmt.Errorf("unknown cid %d with data %q", c.cid, c.data))
 				continue
 			}
@@ -228,7 +226,7 @@ nextMessage:
 				close(ch)
 				continue
 			}
-			t.debug("dispatch %d %q", c.cid, c.data)
+			t.debug("[%d] dispatch %q", c.cid, c.data)
 			ch <- c.data
 
 		// Handle queries
@@ -288,6 +286,12 @@ nextMessage:
 				continue nextMessage
 			case *register:
 				chans[q.cid] = q.data
+				t.debug("[%d] chan registered", q.cid)
+				for _, pending := range pendingAlloc[q.cid] {
+					t.debug("[%d] queued data %q", q.cid, pending)
+					q.data <- pending // TODO(kevlar): this seems racy... run in a goroutine?
+				}
+				delete(pendingAlloc, q.cid)
 			case *getChanID:
 				q.cid = cids[q.channel]
 			default:
@@ -626,7 +630,9 @@ func (t *Transport) encodeChan(w io.Writer, val reflect.Value, tag string) error
 	var cid uint64
 	var err error
 
-	etyp := val.Type().Elem()
+	ctyp := val.Type()
+	etyp := ctyp.Elem()
+	t.debug("encodeChan type=%q tag=%q", ctyp, tag)
 	t.encodeValue(w, reflect.ValueOf(etyp.Name()))
 	t.encodeValue(w, reflect.ValueOf(tag))
 
