@@ -132,4 +132,4 @@ Debugging
 
 You can selectively enable fatchan debugging by building your binary with the following `go` flag:
 
-  -ldflags='-X github.com/kylelemons/fatchan.debug true'
+    -ldflags='-X github.com/kylelemons/fatchan.debug true'
