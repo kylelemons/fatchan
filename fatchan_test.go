@@ -396,6 +396,44 @@ func TestServerDisconnect(t *testing.T) {
 	}
 }
 
+func TestQueue(t *testing.T) {
+	apipe, bpipe := net.Pipe()
+	axport := New(apipe, nil)
+	bxport := New(bpipe, nil)
+	defer axport.Close()
+	defer bxport.Close()
+
+	// A
+	achan := make(chan string, 1)
+	achan <- "quick!"
+	close(achan)
+	axport.FromChan(achan)
+
+	// B
+	bchan := make(chan string)
+	bxport.ToChan(bchan)
+
+	// Check data
+	select {
+	case got := <-bchan:
+		if want := "quick!"; got != want {
+			t.Errorf("<-bchan = %q, want %q", got, want)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Errorf("no values on bchan")
+	}
+
+	// Check close
+	select {
+	case got, ok := <-bchan:
+		if ok {
+			t.Errorf("got a value from bchan: %q", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Errorf("bchan was not closed")
+	}
+}
+
 func TestProxy(t *testing.T) {
 	// A <-> B
 	apipe, b1pipe := net.Pipe()
